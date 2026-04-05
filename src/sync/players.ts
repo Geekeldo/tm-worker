@@ -1,49 +1,32 @@
 import { searchPlayer, getPlayerProfile, getPlayerTransfers, sleep } from '../tm-client';
 import { upsertPlayer, upsertTransfer } from '../db';
 
-// ═══════════════════════════════════════
-// LISTE DES TOP JOUEURS À SYNC
-// ═══════════════════════════════════════
-
 export const TOP_PLAYERS = [
-  // 🏆 Superstars
   'Kylian Mbappe', 'Erling Haaland', 'Vinicius Junior', 'Jude Bellingham',
   'Lamine Yamal', 'Florian Wirtz', 'Rodri', 'Lionel Messi',
   'Cristiano Ronaldo', 'Neymar', 'Robert Lewandowski',
-
-  // 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League stars
   'Bukayo Saka', 'Phil Foden', 'Cole Palmer', 'Declan Rice',
   'Martin Odegaard', 'Bruno Fernandes', 'Mohamed Salah',
   'Marcus Rashford', 'Son Heung-min', 'Kevin De Bruyne',
   'Bernardo Silva', 'Darwin Nunez', 'Alexander Isak',
   'Ollie Watkins', 'William Saliba', 'Virgil van Dijk',
   'Trent Alexander-Arnold', 'Alisson Becker',
-
-  // 🇪🇸 La Liga
   'Pedri', 'Gavi', 'Raphinha', 'Dani Olmo', 'Antoine Griezmann',
   'Federico Valverde', 'Eduardo Camavinga', 'Aurelien Tchouameni',
   'Thibaut Courtois',
-
-  // 🇩🇪 Bundesliga
   'Jamal Musiala', 'Harry Kane', 'Leroy Sane', 'Xavi Simons',
   'Nico Schlotterbeck',
-
-  // 🇮🇹 Serie A
   'Lautaro Martinez', 'Rafael Leao', 'Victor Osimhen',
   'Khvicha Kvaratskhelia', 'Nicolo Barella', 'Hakan Calhanoglu',
   'Dusan Vlahovic',
-
-  // 🇫🇷 Ligue 1
   'Ousmane Dembele', 'Achraf Hakimi', 'Gianluigi Donnarumma',
   'Bradley Barcola', 'Nico Williams',
-
-  // 🌍 Rising stars
   'Endrick', 'Josko Gvardiol', 'Pau Cubarsi', 'Alejandro Garnacho',
   'Kobbie Mainoo', 'Warren Zaire-Emery', 'Mathys Tel',
 ];
 
 // ═══════════════════════════════════════
-// HELPER — Extraction safe de valeurs
+// HELPER
 // ═══════════════════════════════════════
 
 function safeString(val: any): string | undefined {
@@ -53,7 +36,7 @@ function safeString(val: any): string | undefined {
 }
 
 // ═══════════════════════════════════════
-// SYNC UN JOUEUR
+// SYNC UN JOUEUR (profil enrichi + transferts)
 // ═══════════════════════════════════════
 
 export async function syncOnePlayer(name: string): Promise<boolean> {
@@ -71,7 +54,7 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
       return false;
     }
 
-    // Extraire position proprement (peut être string ou objet)
+    // Position safe
     let position: string | undefined;
     if (typeof profile.position === 'object' && profile.position !== null) {
       position = profile.position.main || profile.position.name || profile.position.value;
@@ -79,15 +62,15 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
       position = safeString(profile.position);
     }
 
-    // Extraire market value proprement
+    // Market value safe
     const marketValue = profile.marketValue?.value ?? profile.marketValue;
 
-    // Extraire agent proprement
-    const agent = typeof profile.agent === 'object' 
-      ? profile.agent?.name 
+    // Agent safe
+    const agent = typeof profile.agent === 'object'
+      ? profile.agent?.name
       : safeString(profile.agent);
 
-    // Upsert le joueur
+    // Upsert joueur enrichi
     await upsertPlayer({
       id: String(playerId),
       name: profile.name || results[0].name,
@@ -108,17 +91,16 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
       agent,
       foot: safeString(profile.foot),
       height: safeString(profile.height),
+      isEnriched: true, // ← marqué comme enrichi
     });
 
     console.log(`[Sync] ✅ ${name} → ${profile.club?.name || '?'} (${safeString(marketValue) || '?'})`);
 
-    // Sync transferts
+    // Transferts
     await sleep(1000);
     const transfers = await getPlayerTransfers(playerId);
-    
-    // L'API peut renvoyer {transfers: [...]} ou {transferHistory: [...]} ou directement [...]
-    const transferList = transfers?.transfers 
-      || transfers?.transferHistory 
+    const transferList = transfers?.transfers
+      || transfers?.transferHistory
       || (Array.isArray(transfers) ? transfers : []);
 
     if (Array.isArray(transferList)) {
@@ -139,7 +121,6 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
     }
 
     return true;
-
   } catch (e: any) {
     console.log(`[Sync] Error ${name}: ${e.message?.slice(0, 80)}`);
     return false;
@@ -147,23 +128,22 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
 }
 
 // ═══════════════════════════════════════
-// SYNC TOUS LES JOUEURS
+// SYNC TOUS LES TOP PLAYERS
 // ═══════════════════════════════════════
 
 export async function syncAllPlayers(): Promise<{ success: number; failed: number }> {
   let success = 0;
   let failed = 0;
 
-  console.log(`\n[Sync] ⚽ Syncing ${TOP_PLAYERS.length} players...\n`);
+  console.log(`\n[Sync] ⚽ Enriching ${TOP_PLAYERS.length} top players...\n`);
 
   for (const name of TOP_PLAYERS) {
     const ok = await syncOnePlayer(name);
     if (ok) success++;
     else failed++;
-
     await sleep(1500);
   }
 
-  console.log(`\n[Sync] Players done: ${success} ✅ / ${failed} ❌\n`);
+  console.log(`\n[Sync] Players enriched: ${success} ✅ / ${failed} ❌\n`);
   return { success, failed };
 }

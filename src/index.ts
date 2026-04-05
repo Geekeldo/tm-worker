@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import http from 'http';
-import { testConnection, sql } from './db';
+import { testConnection, initTables, sql } from './db';
 import { syncAllPlayers, syncOnePlayer, TOP_PLAYERS } from './sync/players';
 import { syncAllClubs } from './sync/clubs';
 import { getTransferStats } from './sync/transfers';
@@ -25,10 +25,10 @@ async function fullSync() {
   console.log(`${'═'.repeat(50)}\n`);
 
   try {
-    // 1. Sync clubs d'abord
+    // 1. Sync clubs + TOUS leurs joueurs
     const clubResult = await syncAllClubs();
 
-    // 2. Sync joueurs (+ leurs transferts)
+    // 2. Sync top players (profils enrichis + transferts)
     const playerResult = await syncAllPlayers();
 
     // 3. Stats finales
@@ -36,22 +36,26 @@ async function fullSync() {
     const duration = Math.round((Date.now() - start) / 1000);
 
     const playerCount = await sql`SELECT COUNT(*) as count FROM players`;
+    const enrichedCount = await sql`SELECT COUNT(*) as count FROM players WHERE is_enriched = true`;
     const clubCount = await sql`SELECT COUNT(*) as count FROM clubs`;
 
     console.log(`\n${'═'.repeat(50)}`);
     console.log(`[Sync] ✅ Full sync completed in ${duration}s`);
     console.log(`[Sync] 📊 Database stats:`);
-    console.log(`[Sync]    Players: ${playerCount[0]?.count || 0} (${playerResult.success} synced, ${playerResult.failed} failed)`);
-    console.log(`[Sync]    Clubs: ${clubCount[0]?.count || 0} (${clubResult.success} synced, ${clubResult.failed} failed)`);
+    console.log(`[Sync]    Clubs: ${clubCount[0]?.count || 0}`);
+    console.log(`[Sync]    Players total: ${playerCount[0]?.count || 0} (from ${clubResult.success} club squads)`);
+    console.log(`[Sync]    Players enriched: ${enrichedCount[0]?.count || 0} (${playerResult.success} synced, ${playerResult.failed} failed)`);
+    console.log(`[Sync]    Squad players: ${clubResult.totalPlayers}`);
     console.log(`[Sync]    Transfers: ${transferStats.total} (${transferStats.withFee} with fee, ${transferStats.loans} loans)`);
     console.log(`${'═'.repeat(50)}\n`);
+
   } finally {
     isSyncing = false;
   }
 }
 
 // ═══════════════════════════════════════
-// SERVEUR HTTP — Pour trigger manuel + health check
+// SERVEUR HTTP
 // ═══════════════════════════════════════
 
 function startHttpServer() {
@@ -61,10 +65,37 @@ function startHttpServer() {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${PORT}`);
 
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+
     // Health check
     if (url.pathname === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200);
       res.end(JSON.stringify({ status: 'ok', syncing: isSyncing }));
+      return;
+    }
+
+    // Status
+    if (url.pathname === '/api/status') {
+      try {
+        const players = await sql`SELECT COUNT(*) as count FROM players`;
+        const enriched = await sql`SELECT COUNT(*) as count FROM players WHERE is_enriched = true`;
+        const clubs = await sql`SELECT COUNT(*) as count FROM clubs`;
+        const transfers = await getTransferStats();
+
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          syncing: isSyncing,
+          players: Number(players[0]?.count || 0),
+          playersEnriched: Number(enriched[0]?.count || 0),
+          clubs: Number(clubs[0]?.count || 0),
+          transfers,
+        }));
+      } catch (e: any) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: e.message }));
+      }
       return;
     }
 
@@ -72,79 +103,54 @@ function startHttpServer() {
     if (url.pathname === '/api/sync' && req.method === 'POST') {
       const auth = req.headers['authorization'];
       if (auth !== `Bearer ${SYNC_SECRET}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.writeHead(401);
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
-
       if (isSyncing) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.writeHead(409);
         res.end(JSON.stringify({ error: 'sync already in progress' }));
         return;
       }
 
-      // Lance le sync en background
       fullSync().catch(e => console.error('[Sync] Fatal:', e));
-      
-      res.writeHead(202, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'sync started' }));
+      res.writeHead(202);
+      res.end(JSON.stringify({ status: 'full sync started' }));
       return;
     }
 
-    // Trigger quick refresh (top 10)
+    // Trigger quick refresh
     if (url.pathname === '/api/sync/quick' && req.method === 'POST') {
       const auth = req.headers['authorization'];
       if (auth !== `Bearer ${SYNC_SECRET}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.writeHead(401);
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
 
-      // Quick refresh en background
       (async () => {
         for (const name of TOP_PLAYERS.slice(0, 10)) {
           await syncOnePlayer(name);
           await sleep(2000);
         }
-      })().catch(e => console.error('[Sync] Quick refresh error:', e));
+        console.log('[Sync] ✅ Quick refresh done');
+      })().catch(e => console.error('[Sync] Quick error:', e));
 
-      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.writeHead(202);
       res.end(JSON.stringify({ status: 'quick refresh started' }));
       return;
     }
 
-    // Status
-    if (url.pathname === '/api/status') {
-      try {
-        const playerCount = await sql`SELECT COUNT(*) as count FROM players`;
-        const clubCount = await sql`SELECT COUNT(*) as count FROM clubs`;
-        const transferStats = await getTransferStats();
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          syncing: isSyncing,
-          players: Number(playerCount[0]?.count || 0),
-          clubs: Number(clubCount[0]?.count || 0),
-          transfers: transferStats,
-        }));
-      } catch (e: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-      return;
-    }
-
     res.writeHead(404);
-    res.end('Not found');
+    res.end(JSON.stringify({ error: 'not found' }));
   });
 
   server.listen(PORT, () => {
-    console.log(`[HTTP] 🌐 Server listening on port ${PORT}`);
-    console.log(`[HTTP] Endpoints:`);
-    console.log(`[HTTP]   GET  /health       — Health check`);
-    console.log(`[HTTP]   GET  /api/status   — DB stats`);
-    console.log(`[HTTP]   POST /api/sync     — Trigger full sync`);
-    console.log(`[HTTP]   POST /api/sync/quick — Trigger quick refresh`);
+    console.log(`[HTTP] 🌐 Listening on port ${PORT}`);
+    console.log(`[HTTP]   GET  /health`);
+    console.log(`[HTTP]   GET  /api/status`);
+    console.log(`[HTTP]   POST /api/sync`);
+    console.log(`[HTTP]   POST /api/sync/quick\n`);
   });
 }
 
@@ -159,40 +165,41 @@ async function main() {
   console.log(`[TM Worker] Neon: ${process.env.NEON_DATABASE_URL?.slice(0, 40)}...`);
   console.log(`${'═'.repeat(50)}\n`);
 
+  // Test DB
   const dbOk = await testConnection();
   if (!dbOk) {
     console.error('[TM Worker] ❌ Cannot connect to Neon. Exiting.');
     process.exit(1);
   }
 
-  // Démarrer le serveur HTTP
+  // Crée les tables si elles n'existent pas
+  await initTables();
+
+  // Serveur HTTP (pour trigger manuel)
   startHttpServer();
 
-  // Sync immédiat au démarrage
+  // Sync immédiat
   await fullSync();
 
-  // Cron: Full sync quotidien à 4h UTC
+  // Crons
   cron.schedule('0 4 * * *', () => {
-    console.log(`[TM Worker] ⏰ Daily sync triggered`);
+    console.log(`[Cron] ⏰ Daily sync`);
     fullSync().catch(e => console.error('[Sync] Fatal:', e));
   });
 
-  // Cron: Quick refresh toutes les 6h
   cron.schedule('0 */6 * * *', async () => {
-    console.log(`[TM Worker] ⏰ Quick refresh triggered`);
+    console.log(`[Cron] ⏰ Quick refresh`);
     for (const name of TOP_PLAYERS.slice(0, 10)) {
       await syncOnePlayer(name);
       await sleep(2000);
     }
   });
 
-  console.log(`[TM Worker] 📅 Crons scheduled:`);
-  console.log(`[TM Worker]    Full sync: daily at 04:00 UTC`);
-  console.log(`[TM Worker]    Quick refresh: every 6h (top 10 players)`);
-  console.log(`[TM Worker] 💤 Waiting for next trigger...\n`);
+  console.log(`[TM Worker] 📅 Crons: full=04:00 UTC, quick=every 6h`);
+  console.log(`[TM Worker] 💤 Waiting...\n`);
 }
 
 main().catch(e => {
-  console.error('[TM Worker] Fatal error:', e);
+  console.error('[TM Worker] Fatal:', e);
   process.exit(1);
 });
