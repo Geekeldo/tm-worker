@@ -1,14 +1,7 @@
 import { neon } from '@neondatabase/serverless';
 
-// ═══════════════════════════════════════
-// CONNEXION NEON
-// ═══════════════════════════════════════
-
 const DATABASE_URL = process.env.NEON_DATABASE_URL || process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  throw new Error('NEON_DATABASE_URL or DATABASE_URL is required');
-}
+if (!DATABASE_URL) throw new Error('NEON_DATABASE_URL or DATABASE_URL is required');
 
 export const sql = neon(DATABASE_URL);
 
@@ -24,101 +17,52 @@ export async function testConnection(): Promise<boolean> {
 }
 
 // ═══════════════════════════════════════
-// HELPERS — Plus jamais de "value.replace is not a function"
+// HELPERS
 // ═══════════════════════════════════════
 
-/** Transforme n'importe quoi en string safe (ou null) */
 function cleanString(value: any): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number') return String(value);
   if (typeof value === 'boolean') return String(value);
   if (typeof value === 'string') return value.trim() || null;
-  
-  // Objet: essaie d'extraire .value, .name, ou stringify
   if (typeof value === 'object') {
     if (value.value !== undefined) return cleanString(value.value);
     if (value.name !== undefined) return cleanString(value.name);
     try { return JSON.stringify(value); } catch { return null; }
   }
-  
   return String(value);
 }
 
-/** Transforme n'importe quel format de market value en nombre */
 function parseMarketValue(value: any): number | null {
   if (value === null || value === undefined) return null;
-
-  // Déjà un nombre
   if (typeof value === 'number') return value;
-
-  // Objet: {value: 150000000} ou {value: "€150M", currency: "EUR"}
   if (typeof value === 'object') {
-    const inner = value.value ?? value.marketValue ?? value.amount ?? null;
-    if (inner === null) return null;
-    return parseMarketValue(inner); // Récursif
+    return parseMarketValue(value.value ?? value.marketValue ?? null);
   }
-
-  // String: "€150M", "€500K", "150000000", "free transfer"
-  const str = String(value)
-    .replace(/[€$£,\s]/g, '')
-    .trim()
-    .toLowerCase();
-
+  const str = String(value).replace(/[€$£,\s]/g, '').trim().toLowerCase();
   if (!str || str === '-' || str === 'n/a' || str.includes('free')) return 0;
-  if (str.includes('loan') || str.includes('leihe')) return null;
-
-  // "150m" → 150_000_000
-  if (str.endsWith('m')) {
-    const num = parseFloat(str.replace('m', ''));
-    return isNaN(num) ? null : Math.round(num * 1_000_000);
-  }
-
-  // "500k" ou "500tsd" → 500_000
-  if (str.endsWith('k') || str.endsWith('tsd')) {
-    const num = parseFloat(str.replace(/[ktsd.]/g, ''));
-    return isNaN(num) ? null : Math.round(num * 1_000);
-  }
-
-  // "150000000" → nombre direct
+  if (str.includes('loan')) return null;
+  if (str.endsWith('m')) return Math.round(parseFloat(str) * 1_000_000);
+  if (str.endsWith('k') || str.endsWith('tsd')) return Math.round(parseFloat(str) * 1_000);
   const num = parseFloat(str);
   return isNaN(num) ? null : Math.round(num);
 }
 
-/** Parse un fee de transfert → {display, number} */
 function parseTransferFee(fee: any): { display: string | null; number: number | null } {
-  if (fee === null || fee === undefined) {
-    return { display: null, number: null };
-  }
-
-  // Objet: {value: "€85M", currency: "EUR"}
+  if (fee === null || fee === undefined) return { display: null, number: null };
   if (typeof fee === 'object' && fee !== null) {
-    const display = cleanString(fee.value ?? fee);
-    const number = parseMarketValue(fee.value ?? fee);
-    return { display, number };
+    return { display: cleanString(fee.value ?? fee), number: parseMarketValue(fee.value ?? fee) };
   }
-
   const str = String(fee).trim();
   const lower = str.toLowerCase();
-
-  // Cas spéciaux
-  if (!str || str === '-' || str === '?') {
-    return { display: null, number: null };
-  }
-  if (lower.includes('free') || lower.includes('ablösefrei') || lower.includes('ablöse')) {
-    return { display: 'Free Transfer', number: 0 };
-  }
-  if (lower.includes('loan') || lower.includes('leihe')) {
-    return { display: 'Loan', number: null };
-  }
-  if (lower === 'draft' || lower.includes('end of') || lower.includes('youth')) {
-    return { display: str, number: 0 };
-  }
-
+  if (!str || str === '-' || str === '?') return { display: null, number: null };
+  if (lower.includes('free')) return { display: 'Free Transfer', number: 0 };
+  if (lower.includes('loan')) return { display: 'Loan', number: null };
   return { display: str, number: parseMarketValue(str) };
 }
 
 // ═══════════════════════════════════════
-// INIT TABLES — Crée les tables si elles n'existent pas
+// INIT TABLES
 // ═══════════════════════════════════════
 
 export async function initTables() {
@@ -185,17 +129,23 @@ export async function initTables() {
       )
     `;
 
-    // Index unique pour éviter les doublons de transferts
+    // Index unique pour transfers
     await sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_transfers_unique
-      ON transfers (player_id, COALESCE(season, ''), COALESCE(from_club_id, ''), COALESCE(to_club_id, ''))
+      DO 
+$$
+BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_transfers_unique') THEN
+          CREATE UNIQUE INDEX idx_transfers_unique
+          ON transfers (player_id, COALESCE(season, ''), COALESCE(from_club_id, ''), COALESCE(to_club_id, ''));
+        END IF;
+      END
+$$
+
     `;
 
-    // Index pour les recherches rapides
     await sql`CREATE INDEX IF NOT EXISTS idx_players_club ON players (club_id)`;
     await sql`CREATE INDEX IF NOT EXISTS idx_players_name ON players (name)`;
     await sql`CREATE INDEX IF NOT EXISTS idx_transfers_player ON transfers (player_id)`;
-    await sql`CREATE INDEX IF NOT EXISTS idx_transfers_fee ON transfers (transfer_fee_number DESC)`;
 
     console.log('[DB] ✅ Tables ready');
   } catch (e: any) {
@@ -208,45 +158,19 @@ export async function initTables() {
 // UPSERT CLUB
 // ═══════════════════════════════════════
 
-export async function upsertClub(club: {
-  id: string;
-  name: string;
-  imageUrl?: string;
-  leagueId?: string;
-  leagueName?: string;
-  country?: string;
-  stadiumName?: string;
-  stadiumSeats?: number;
-  squadSize?: number;
-  averageAge?: number;
-  totalMarketValue?: any;
-  coachName?: string;
-}) {
+export async function upsertClub(club: any) {
   try {
-    const tmvNumber = parseMarketValue(club.totalMarketValue);
+    const tmv = parseMarketValue(club.totalMarketValue);
     const tmvDisplay = cleanString(club.totalMarketValue);
-
     await sql`
-      INSERT INTO clubs (
-        tm_id, name, image_url, league_id, league_name, country,
+      INSERT INTO clubs (tm_id, name, image_url, league_id, league_name, country,
         stadium_name, stadium_seats, squad_size, average_age,
-        total_market_value, total_market_value_display, coach_name, updated_at
-      ) VALUES (
-        ${club.id},
-        ${club.name},
-        ${club.imageUrl || null},
-        ${club.leagueId || null},
-        ${club.leagueName || null},
-        ${club.country || null},
-        ${club.stadiumName || null},
-        ${club.stadiumSeats || null},
-        ${club.squadSize || null},
-        ${club.averageAge || null},
-        ${tmvNumber},
-        ${tmvDisplay},
-        ${club.coachName || null},
-        NOW()
-      )
+        total_market_value, total_market_value_display, coach_name, updated_at)
+      VALUES (${club.id}, ${club.name}, ${club.imageUrl || null},
+        ${club.leagueId || null}, ${club.leagueName || null}, ${club.country || null},
+        ${club.stadiumName || null}, ${club.stadiumSeats || null},
+        ${club.squadSize || null}, ${club.averageAge || null},
+        ${tmv}, ${tmvDisplay}, ${club.coachName || null}, NOW())
       ON CONFLICT (tm_id) DO UPDATE SET
         name = EXCLUDED.name,
         image_url = COALESCE(EXCLUDED.image_url, clubs.image_url),
@@ -263,97 +187,49 @@ export async function upsertClub(club: {
         updated_at = NOW()
     `;
   } catch (e: any) {
-    console.log(`[DB] Club upsert error ${club.name}: ${e.message?.slice(0, 80)}`);
+    console.log(`[DB] Club error ${club.name}: ${e.message?.slice(0, 80)}`);
   }
 }
 
-/** Mini upsert — juste pour créer un club référencé dans un transfert */
-export async function ensureClubExists(clubId: string, clubName: string, clubImage?: string) {
+export async function ensureClubExists(id: string, name: string, image?: string) {
   try {
     await sql`
       INSERT INTO clubs (tm_id, name, image_url, updated_at)
-      VALUES (${clubId}, ${clubName}, ${clubImage || null}, NOW())
+      VALUES (${id}, ${name}, ${image || null}, NOW())
       ON CONFLICT (tm_id) DO NOTHING
     `;
-  } catch (e: any) {
-    // Silencieux — c'est pas grave si ça fail
-  }
+  } catch { /* ignore */ }
 }
 
 // ═══════════════════════════════════════
 // UPSERT PLAYER
 // ═══════════════════════════════════════
 
-export async function upsertPlayer(player: {
-  id: string;
-  name: string;
-  fullName?: string;
-  imageUrl?: string;
-  dateOfBirth?: string;
-  age?: number;
-  nationality?: string[];
-  position?: string;
-  shirtNumber?: number;
-  clubId?: string;
-  clubName?: string;
-  clubImage?: string;
-  marketValue?: any;
-  contractUntil?: string;
-  agent?: any;
-  foot?: string;
-  height?: any;
-  isEnriched?: boolean;
-}) {
+export async function upsertPlayer(player: any) {
   try {
     const mvNumber = parseMarketValue(player.marketValue);
     const mvDisplay = cleanString(player.marketValue);
-    const agentStr = cleanString(player.agent);
-    const heightStr = cleanString(player.height);
-    const positionStr = cleanString(player.position);
-    const contractStr = cleanString(player.contractUntil);
-    const footStr = cleanString(player.foot);
-    const dobStr = cleanString(player.dateOfBirth);
-    const fullNameStr = cleanString(player.fullName);
-    const imageStr = cleanString(player.imageUrl);
-    const clubImageStr = cleanString(player.clubImage);
-
     const nationalities = Array.isArray(player.nationality)
       ? player.nationality.filter(Boolean).join(', ')
       : cleanString(player.nationality);
 
-    // Auto-create le club s'il n'existe pas
     if (player.clubId && player.clubName) {
       await ensureClubExists(player.clubId, player.clubName, player.clubImage);
     }
 
     await sql`
-      INSERT INTO players (
-        tm_id, name, full_name, image_url, date_of_birth, age,
-        nationality, position, shirt_number, club_id, club_name,
-        club_image, market_value, market_value_number,
-        contract_until, agent, foot, height, is_enriched, updated_at
-      ) VALUES (
-        ${player.id},
-        ${player.name},
-        ${fullNameStr},
-        ${imageStr},
-        ${dobStr},
-        ${player.age || null},
-        ${nationalities},
-        ${positionStr},
-        ${player.shirtNumber || null},
-        ${player.clubId || null},
-        ${player.clubName || null},
-        ${clubImageStr},
-        ${mvDisplay},
-        ${mvNumber},
-        ${contractStr},
-        ${agentStr},
-        ${footStr},
-        ${heightStr},
-        ${player.isEnriched || false},
-        NOW()
-      )
+      INSERT INTO players (tm_id, name, full_name, image_url, date_of_birth, age,
+        nationality, position, shirt_number, club_id, club_name, club_image,
+        market_value, market_value_number, contract_until, agent, foot, height,
+        is_enriched, updated_at)
+      VALUES (${player.id}, ${player.name}, ${cleanString(player.fullName)},
+        ${cleanString(player.imageUrl)}, ${cleanString(player.dateOfBirth)},
+        ${player.age || null}, ${nationalities}, ${cleanString(player.position)},
+        ${player.shirtNumber || null}, ${player.clubId || null},
+        ${player.clubName || null}, ${cleanString(player.clubImage)},
+        ${mvDisplay}, ${mvNumber}, ${cleanString(player.contractUntil)},
+        ${cleanString(player.agent)}, ${cleanString(player.foot)},
+        ${cleanString(player.height)}, ${player.isEnriched || false}, NOW())
       ON CONFLICT (tm_id) DO UPDATE SET
         name = EXCLUDED.name,
         full_name = COALESCE(EXCLUDED.full_name, players.full_name),
@@ -372,14 +248,11 @@ export async function upsertPlayer(player: {
         agent = COALESCE(EXCLUDED.agent, players.agent),
         foot = COALESCE(EXCLUDED.foot, players.foot),
         height = COALESCE(EXCLUDED.height, players.height),
-        is_enriched = CASE 
-          WHEN EXCLUDED.is_enriched = true THEN true 
-          ELSE players.is_enriched 
-        END,
+        is_enriched = CASE WHEN EXCLUDED.is_enriched = true THEN true ELSE players.is_enriched END,
         updated_at = NOW()
     `;
   } catch (e: any) {
-    console.log(`[DB] Player upsert error ${player.name}: ${e.message?.slice(0, 80)}`);
+    console.log(`[DB] Player error ${player.name}: ${e.message?.slice(0, 80)}`);
   }
 }
 
@@ -387,22 +260,10 @@ export async function upsertPlayer(player: {
 // UPSERT TRANSFER
 // ═══════════════════════════════════════
 
-export async function upsertTransfer(transfer: {
-  playerId: string;
-  playerName: string;
-  fromClubId?: string;
-  fromClubName?: string;
-  toClubId?: string;
-  toClubName?: string;
-  fee?: any;
-  season?: string;
-  date?: string;
-  isLoan?: boolean;
-}) {
+export async function upsertTransfer(transfer: any) {
   try {
-    const { display: feeDisplay, number: feeNumber } = parseTransferFee(transfer.fee);
+    const { display, number } = parseTransferFee(transfer.fee);
 
-    // Auto-create les clubs from/to s'ils n'existent pas (fix FK)
     if (transfer.fromClubId && transfer.fromClubName) {
       await ensureClubExists(transfer.fromClubId, transfer.fromClubName);
     }
@@ -410,38 +271,17 @@ export async function upsertTransfer(transfer: {
       await ensureClubExists(transfer.toClubId, transfer.toClubName);
     }
 
-    const seasonStr = cleanString(transfer.season);
-    const dateStr = cleanString(transfer.date);
-    const playerNameStr = cleanString(transfer.playerName);
-    const fromNameStr = cleanString(transfer.fromClubName);
-    const toNameStr = cleanString(transfer.toClubName);
-
     await sql`
-      INSERT INTO transfers (
-        player_id, player_name,
-        from_club_id, from_club_name,
-        to_club_id, to_club_name,
-        transfer_fee, transfer_fee_number,
-        season, transfer_date, is_loan, updated_at
-      ) VALUES (
-        ${transfer.playerId},
-        ${playerNameStr},
-        ${transfer.fromClubId || null},
-        ${fromNameStr},
-        ${transfer.toClubId || null},
-        ${toNameStr},
-        ${feeDisplay},
-        ${feeNumber},
-        ${seasonStr},
-        ${dateStr},
-        ${transfer.isLoan || false},
-        NOW()
-      )
+      INSERT INTO transfers (player_id, player_name, from_club_id, from_club_name,
+        to_club_id, to_club_name, transfer_fee, transfer_fee_number,
+        season, transfer_date, is_loan, updated_at)
+      VALUES (${transfer.playerId}, ${cleanString(transfer.playerName)},
+        ${transfer.fromClubId || null}, ${cleanString(transfer.fromClubName)},
+        ${transfer.toClubId || null}, ${cleanString(transfer.toClubName)},
+        ${display}, ${number}, ${cleanString(transfer.season)},
+        ${cleanString(transfer.date)}, ${transfer.isLoan || false}, NOW())
       ON CONFLICT (player_id, COALESCE(season, ''), COALESCE(from_club_id, ''), COALESCE(to_club_id, ''))
       DO UPDATE SET
-        player_name = COALESCE(EXCLUDED.player_name, transfers.player_name),
-        from_club_name = COALESCE(EXCLUDED.from_club_name, transfers.from_club_name),
-        to_club_name = COALESCE(EXCLUDED.to_club_name, transfers.to_club_name),
         transfer_fee = COALESCE(EXCLUDED.transfer_fee, transfers.transfer_fee),
         transfer_fee_number = COALESCE(EXCLUDED.transfer_fee_number, transfers.transfer_fee_number),
         transfer_date = COALESCE(EXCLUDED.transfer_date, transfers.transfer_date),
@@ -449,6 +289,6 @@ export async function upsertTransfer(transfer: {
         updated_at = NOW()
     `;
   } catch (e: any) {
-    console.log(`[DB] Transfer upsert error: ${e.message?.slice(0, 80)}`);
+    console.log(`[DB] Transfer error: ${e.message?.slice(0, 80)}`);
   }
 }

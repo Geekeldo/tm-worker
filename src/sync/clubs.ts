@@ -1,19 +1,97 @@
-import { searchClub, getClubProfile, getClubPlayers, sleep } from '../tm-client';
+import { getClubProfile, getClubPlayers, sleep } from '../tm-client';
 import { upsertClub, upsertPlayer } from '../db';
 
-export const TOP_CLUBS = [
-  'Manchester City', 'Arsenal', 'Liverpool', 'Chelsea',
-  'Manchester United', 'Tottenham Hotspur', 'Newcastle United',
-  'Aston Villa', 'Brighton', 'West Ham United',
-  'Real Madrid', 'Barcelona', 'Atletico Madrid', 'Real Sociedad',
-  'Athletic Bilbao', 'Villarreal', 'Sevilla', 'Real Betis',
-  'Bayern Munich', 'Borussia Dortmund', 'Bayer Leverkusen',
-  'RB Leipzig', 'VfB Stuttgart', 'Eintracht Frankfurt',
-  'Inter Milan', 'AC Milan', 'Juventus', 'Napoli',
-  'Roma', 'Atalanta', 'Lazio',
-  'Paris Saint-Germain', 'Marseille', 'Lyon',
-  'Monaco', 'Lille', 'Lens',
-  'Benfica', 'Porto', 'Ajax', 'Celtic',
+// ═══════════════════════════════════════
+// CLUBS AVEC IDS TRANSFERMARKT DIRECTS
+// ═══════════════════════════════════════
+
+export const TOP_CLUBS: { name: string; tmId: string }[] = [
+  // 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League
+  { name: 'Manchester City', tmId: '281' },
+  { name: 'Arsenal', tmId: '11' },
+  { name: 'Liverpool', tmId: '31' },
+  { name: 'Chelsea', tmId: '631' },
+  { name: 'Manchester United', tmId: '985' },
+  { name: 'Tottenham Hotspur', tmId: '148' },
+  { name: 'Newcastle United', tmId: '762' },
+  { name: 'Aston Villa', tmId: '405' },
+  { name: 'Brighton', tmId: '1237' },
+  { name: 'West Ham United', tmId: '379' },
+  { name: 'Crystal Palace', tmId: '873' },
+  { name: 'Fulham', tmId: '931' },
+  { name: 'Wolverhampton', tmId: '543' },
+  { name: 'Bournemouth', tmId: '989' },
+  { name: 'Nottingham Forest', tmId: '703' },
+  { name: 'Everton', tmId: '29' },
+  { name: 'Brentford', tmId: '1148' },
+  { name: 'Leicester City', tmId: '1003' },
+  { name: 'Ipswich Town', tmId: '677' },
+  { name: 'Southampton', tmId: '180' },
+
+  // 🇪🇸 La Liga
+  { name: 'Real Madrid', tmId: '418' },
+  { name: 'Barcelona', tmId: '131' },
+  { name: 'Atletico Madrid', tmId: '13' },
+  { name: 'Real Sociedad', tmId: '681' },
+  { name: 'Athletic Bilbao', tmId: '621' },
+  { name: 'Villarreal', tmId: '1050' },
+  { name: 'Sevilla', tmId: '368' },
+  { name: 'Real Betis', tmId: '150' },
+  { name: 'Girona', tmId: '12321' },
+  { name: 'Celta Vigo', tmId: '940' },
+
+  // 🇩🇪 Bundesliga
+  { name: 'Bayern Munich', tmId: '27' },
+  { name: 'Borussia Dortmund', tmId: '16' },
+  { name: 'Bayer Leverkusen', tmId: '15' },
+  { name: 'RB Leipzig', tmId: '23826' },
+  { name: 'VfB Stuttgart', tmId: '79' },
+  { name: 'Eintracht Frankfurt', tmId: '24' },
+  { name: 'Wolfsburg', tmId: '82' },
+  { name: 'Freiburg', tmId: '60' },
+
+  // 🇮🇹 Serie A
+  { name: 'Inter Milan', tmId: '46' },
+  { name: 'AC Milan', tmId: '5' },
+  { name: 'Juventus', tmId: '506' },
+  { name: 'Napoli', tmId: '6195' },
+  { name: 'Roma', tmId: '12' },
+  { name: 'Atalanta', tmId: '800' },
+  { name: 'Lazio', tmId: '398' },
+  { name: 'Fiorentina', tmId: '430' },
+  { name: 'Bologna', tmId: '1025' },
+
+  // 🇫🇷 Ligue 1
+  { name: 'Paris Saint-Germain', tmId: '583' },
+  { name: 'Marseille', tmId: '244' },
+  { name: 'Lyon', tmId: '1041' },
+  { name: 'Monaco', tmId: '162' },
+  { name: 'Lille', tmId: '1082' },
+  { name: 'Lens', tmId: '826' },
+  { name: 'Nice', tmId: '417' },
+  { name: 'Rennes', tmId: '273' },
+
+  // 🇵🇹 Portugal
+  { name: 'Benfica', tmId: '294' },
+  { name: 'Porto', tmId: '720' },
+  { name: 'Sporting CP', tmId: '336' },
+
+  // 🇳🇱 Eredivisie
+  { name: 'Ajax', tmId: '610' },
+  { name: 'PSV', tmId: '383' },
+  { name: 'Feyenoord', tmId: '234' },
+
+  // 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scottish
+  { name: 'Celtic', tmId: '371' },
+  { name: 'Rangers', tmId: '124' },
+
+  // 🇹🇷 Turquie
+  { name: 'Galatasaray', tmId: '141' },
+  { name: 'Fenerbahce', tmId: '36' },
+
+  // 🇸🇦 Saudi
+  { name: 'Al-Hilal', tmId: '10533' },
+  { name: 'Al-Nassr', tmId: '18543' },
 ];
 
 function safeString(val: any): string | undefined {
@@ -23,46 +101,37 @@ function safeString(val: any): string | undefined {
 }
 
 // ═══════════════════════════════════════
-// SYNC UN CLUB + TOUS SES JOUEURS
+// SYNC UN CLUB + SES JOUEURS (par ID direct)
 // ═══════════════════════════════════════
 
-export async function syncOneClub(name: string): Promise<{
+export async function syncOneClub(club: { name: string; tmId: string }): Promise<{
   clubOk: boolean;
   playersInserted: number;
 }> {
   try {
-    const results = await searchClub(name);
-    if (!results || results.length === 0) {
-      console.log(`[Sync] ❌ Club not found: ${name}`);
-      return { clubOk: false, playersInserted: 0 };
-    }
-
-    const clubId = results[0].id;
-    const profile = await getClubProfile(clubId);
+    const profile = await getClubProfile(club.tmId);
     if (!profile) {
-      console.log(`[Sync] ❌ No club profile: ${name}`);
+      console.log(`[Sync] ❌ No profile: ${club.name} (ID: ${club.tmId})`);
       return { clubOk: false, playersInserted: 0 };
     }
 
-    // Upsert club
     await upsertClub({
-      id: String(clubId),
-      name: profile.name || results[0].name,
-      imageUrl: profile.image || results[0].image,
+      id: club.tmId,
+      name: profile.name || club.name,
+      imageUrl: safeString(profile.image),
       leagueId: profile.league?.id ? String(profile.league.id) : undefined,
-      leagueName: profile.league?.name,
-      country: profile.league?.country || profile.country,
-      stadiumName: profile.stadium?.name,
+      leagueName: safeString(profile.league?.name),
+      country: safeString(profile.league?.country || profile.country),
+      stadiumName: safeString(profile.stadium?.name),
       stadiumSeats: profile.stadium?.seats || profile.stadium?.totalCapacity,
       squadSize: profile.squad?.size,
       averageAge: profile.squad?.averageAge,
       totalMarketValue: profile.squad?.marketValue || profile.squad?.totalMarketValue,
-      coachName: profile.coach?.name || profile.manager?.name,
+      coachName: safeString(profile.coach?.name || profile.manager?.name),
     });
 
-    // Récupérer TOUS les joueurs du club
-    await sleep(1000);
-    const playersData = await getClubPlayers(String(clubId));
+    await sleep(1500);
+    const playersData = await getClubPlayers(club.tmId);
 
     const playersList = playersData?.players
       || (Array.isArray(playersData) ? playersData : []);
@@ -91,29 +160,29 @@ export async function syncOneClub(name: string): Promise<{
               : [],
             position,
             shirtNumber: p.shirtNumber ? Number(p.shirtNumber) : undefined,
-            clubId: String(clubId),
-            clubName: profile.name || name,
+            clubId: club.tmId,
+            clubName: profile.name || club.name,
             clubImage: safeString(profile.image),
             marketValue: p.marketValue?.value ?? p.marketValue,
             contractUntil: safeString(p.contractExpiryDate || p.contractUntil),
             agent: typeof p.agent === 'object' ? p.agent?.name : safeString(p.agent),
             foot: safeString(p.foot),
             height: safeString(p.height),
-            isEnriched: false, // Données basiques, pas enrichies
+            isEnriched: false,
           });
 
           playersInserted++;
         } catch {
-          // Skip silencieusement
+          // Skip
         }
       }
     }
 
-    console.log(`[Sync] ✅ Club: ${name} (${playersInserted}/${playersList.length || 0} players saved)`);
+    console.log(`[Sync] ✅ ${club.name} (${playersInserted}/${playersList.length || 0} players)`);
     return { clubOk: true, playersInserted };
 
   } catch (e: any) {
-    console.log(`[Sync] Error club ${name}: ${e.message?.slice(0, 50)}`);
+    console.log(`[Sync] Error ${club.name}: ${e.message?.slice(0, 60)}`);
     return { clubOk: false, playersInserted: 0 };
   }
 }
@@ -133,19 +202,19 @@ export async function syncAllClubs(): Promise<{
 
   console.log(`\n[Sync] 🏟️ Syncing ${TOP_CLUBS.length} clubs + squads...\n`);
 
-  for (const name of TOP_CLUBS) {
-    const result = await syncOneClub(name);
+  for (const club of TOP_CLUBS) {
+    const result = await syncOneClub(club);
     if (result.clubOk) {
       success++;
       totalPlayers += result.playersInserted;
     } else {
       failed++;
     }
-    await sleep(1500);
+    await sleep(2500);
   }
 
   console.log(`\n[Sync] Clubs: ${success} ✅ / ${failed} ❌`);
-  console.log(`[Sync] Squad players saved: ${totalPlayers} 🎯\n`);
+  console.log(`[Sync] Squad players: ${totalPlayers} 🎯\n`);
 
   return { success, failed, totalPlayers };
 }
