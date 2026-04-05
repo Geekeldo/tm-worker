@@ -43,6 +43,16 @@ export const TOP_PLAYERS = [
 ];
 
 // ═══════════════════════════════════════
+// HELPER — Extraction safe de valeurs
+// ═══════════════════════════════════════
+
+function safeString(val: any): string | undefined {
+  if (val === null || val === undefined) return undefined;
+  if (typeof val === 'object') return val.value || val.name || String(val);
+  return String(val);
+}
+
+// ═══════════════════════════════════════
 // SYNC UN JOUEUR
 // ═══════════════════════════════════════
 
@@ -61,49 +71,69 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
       return false;
     }
 
+    // Extraire position proprement (peut être string ou objet)
+    let position: string | undefined;
+    if (typeof profile.position === 'object' && profile.position !== null) {
+      position = profile.position.main || profile.position.name || profile.position.value;
+    } else {
+      position = safeString(profile.position);
+    }
+
+    // Extraire market value proprement
+    const marketValue = profile.marketValue?.value ?? profile.marketValue;
+
+    // Extraire agent proprement
+    const agent = typeof profile.agent === 'object' 
+      ? profile.agent?.name 
+      : safeString(profile.agent);
+
     // Upsert le joueur
     await upsertPlayer({
       id: String(playerId),
       name: profile.name || results[0].name,
-      fullName: profile.fullName || profile.name,
-      imageUrl: profile.imageUrl || results[0].imageUrl,
-      dateOfBirth: profile.dateOfBirth,
-      age: profile.age,
+      fullName: safeString(profile.fullName || profile.name),
+      imageUrl: safeString(profile.imageUrl || results[0].imageUrl),
+      dateOfBirth: safeString(profile.dateOfBirth),
+      age: profile.age ? Number(profile.age) : undefined,
       nationality: profile.nationality
-        ? (Array.isArray(profile.nationality) ? profile.nationality : [profile.nationality])
+        ? (Array.isArray(profile.nationality) ? profile.nationality.map(String) : [String(profile.nationality)])
         : [],
-      position: typeof profile.position === 'object'
-        ? profile.position?.main || profile.position?.name
-        : profile.position,
-      shirtNumber: profile.shirtNumber,
+      position,
+      shirtNumber: profile.shirtNumber ? Number(profile.shirtNumber) : undefined,
       clubId: profile.club?.id ? String(profile.club.id) : undefined,
-      clubName: profile.club?.name,
-      clubImage: profile.club?.image,
-      marketValue: profile.marketValue?.value || profile.marketValue,
-      contractUntil: profile.contractExpiryDate || profile.contractUntil,
-      agent: typeof profile.agent === 'object' ? profile.agent?.name : profile.agent,
-      foot: profile.foot,
-      height: profile.height,
+      clubName: safeString(profile.club?.name),
+      clubImage: safeString(profile.club?.image),
+      marketValue,
+      contractUntil: safeString(profile.contractExpiryDate || profile.contractUntil),
+      agent,
+      foot: safeString(profile.foot),
+      height: safeString(profile.height),
     });
 
-    console.log(`[Sync] ✅ ${name} → ${profile.club?.name || '?'} (${profile.marketValue?.value || '?'})`);
+    console.log(`[Sync] ✅ ${name} → ${profile.club?.name || '?'} (${safeString(marketValue) || '?'})`);
 
-    // Sync transferts aussi
+    // Sync transferts
     await sleep(1000);
     const transfers = await getPlayerTransfers(playerId);
-    if (transfers?.transfers && Array.isArray(transfers.transfers)) {
-      for (const t of transfers.transfers.slice(0, 5)) {
+    
+    // L'API peut renvoyer {transfers: [...]} ou {transferHistory: [...]} ou directement [...]
+    const transferList = transfers?.transfers 
+      || transfers?.transferHistory 
+      || (Array.isArray(transfers) ? transfers : []);
+
+    if (Array.isArray(transferList)) {
+      for (const t of transferList.slice(0, 5)) {
         await upsertTransfer({
           playerId: String(playerId),
           playerName: profile.name || name,
           fromClubId: t.from?.id ? String(t.from.id) : undefined,
-          fromClubName: t.from?.name,
+          fromClubName: safeString(t.from?.name),
           toClubId: t.to?.id ? String(t.to.id) : undefined,
-          toClubName: t.to?.name,
-          fee: t.fee?.value || t.fee,
-          season: t.season,
-          date: t.date,
-          isLoan: t.isLoan || false,
+          toClubName: safeString(t.to?.name),
+          fee: t.fee,
+          season: safeString(t.season),
+          date: safeString(t.date),
+          isLoan: Boolean(t.isLoan),
         });
       }
     }
@@ -111,7 +141,7 @@ export async function syncOnePlayer(name: string): Promise<boolean> {
     return true;
 
   } catch (e: any) {
-    console.log(`[Sync] Error ${name}: ${e.message?.slice(0, 50)}`);
+    console.log(`[Sync] Error ${name}: ${e.message?.slice(0, 80)}`);
     return false;
   }
 }
@@ -131,7 +161,6 @@ export async function syncAllPlayers(): Promise<{ success: number; failed: numbe
     if (ok) success++;
     else failed++;
 
-    // Délai entre chaque joueur (respect rate limit)
     await sleep(1500);
   }
 
